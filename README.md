@@ -2,7 +2,7 @@
 
 An R pipelines and Shiny application for processing and visualising avian incubation behaviour from nest box sensor data in a semi-automated way. The application ingests raw CSV output from a custom Arduino-based logger (time-of-flight distance sensor + DHT temperature/humidity sensors), classifies female incubation presence/absence using one of as set of tunable algorithms, and supports manual correction of automated classifications.
 
-![images/screenshot of local app deployment](app_demo.png?raw=true)
+![./images/screenshot of local app deployment](app_demo.png?raw=true)
 
 ---
 
