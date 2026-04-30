@@ -28,6 +28,7 @@ library(plotly)
 library(DT)
 library(suncalc)
 library(mclust)
+library(zip)
 
 source("R/pipeline_functions.R")
 source("R/simulation.R")
@@ -250,10 +251,18 @@ ui <- page_sidebar(
 
       tags$h6("Export", class = "text-uppercase text-muted fw-bold mb-2"),
 
-      actionButton("export_current", "Save this deployment",
+      # Download as ZIP — streams to browser downloads folder.
+      # Works in Docker, on shinyapps.io, or any hosted context.
+      downloadButton("download_current", "Download this deployment",
+                     icon  = icon("download"),
+                     class = "btn-primary btn-sm w-100 mb-1"),
+
+      # Save to folder — writes back to the source/processed_data directory.
+      # Only useful when running locally or with a mounted Docker volume.
+      actionButton("export_current", "Save to folder",
                    icon  = icon("floppy-disk"),
                    class = "btn-outline-secondary btn-sm w-100 mb-1"),
-      actionButton("export_all",     "Save all deployments",
+      actionButton("export_all",     "Save all to folder",
                    icon  = icon("floppy-disk"),
                    class = "btn-outline-secondary btn-sm w-100")
     )
@@ -343,12 +352,13 @@ server <- function(input, output, session) {
   )
 
   # Filesystem roots for shinyFiles.
-  # When running inside Docker, INCUBER_DATA_DIR is set to /data (the mounted
-  # volume). Running locally, only Home is exposed.
-  fs_roots <- c(Home = path.expand("~"))
-  docker_data <- Sys.getenv("INCUBER_DATA_DIR", unset = "")
-  if (nchar(docker_data) > 0 && dir.exists(docker_data))
-    fs_roots["Data"] <- docker_data
+  # Locally: Home is the only root. In Docker: the raw_data mount is exposed
+  # for browsing. processed_data is write-only and not shown in the picker.
+  fs_roots  <- c(Home = path.expand("~"))
+  raw_dir   <- Sys.getenv("TOFNESTR_RAW_DIR",       unset = "")
+  proc_dir  <- Sys.getenv("TOFNESTR_PROCESSED_DIR", unset = "")
+  if (nchar(raw_dir)  > 0 && dir.exists(raw_dir))  fs_roots["Raw data"]  <- raw_dir
+  if (nchar(proc_dir) == 0) proc_dir <- NULL   # NULL = same folder as raw
 
   # filetypes controls which files are visible in the content pane
   # (for navigation reference — the picker still selects a directory).
@@ -470,6 +480,11 @@ server <- function(input, output, session) {
         folder <- folders[[i]]
         incProgress(1 / n, detail = basename(folder))
 
+        # out_folder mirrors the subfolder name from raw_data into processed_data
+        out_folder <- if (!is.null(proc_dir)) {
+          file.path(proc_dir, basename(folder))
+        } else NULL
+
         dep <- tryCatch(
           load_or_process_deployment(
             folder,
@@ -477,7 +492,8 @@ server <- function(input, output, session) {
             smooth_sec            = isolate(input$smooth_sec),
             sensitivity           = isolate(input$sensitivity),
             min_bout_sec          = isolate(input$min_bout),
-            classification_method = isolate(input$classification_method)
+            classification_method = isolate(input$classification_method),
+            out_folder            = out_folder
           ),
           error = function(e) {
             msg <- conditionMessage(e)
@@ -554,7 +570,8 @@ server <- function(input, output, session) {
         smooth_sec            = isolate(input$smooth_sec),
         sensitivity           = isolate(input$sensitivity),
         min_bout_sec          = isolate(input$min_bout),
-        classification_method = isolate(input$classification_method)
+        classification_method = isolate(input$classification_method),
+        out_folder            = if (!is.null(proc_dir)) file.path(proc_dir, basename(folder)) else NULL
       ),
       error = function(e) {
         showNotification(paste("Error:", conditionMessage(e)),
@@ -1380,6 +1397,58 @@ server <- function(input, output, session) {
       type = "message", duration = 6
     )
   })
+
+  # ---------------------------------------------------------------------------
+  # Download as ZIP — streams to the browser's downloads folder.
+  # Works in Docker, on shinyapps.io, or any hosted context where the server
+  # filesystem isn't accessible to the user.
+  # ---------------------------------------------------------------------------
+
+  output$download_current <- downloadHandler(
+    filename = function() {
+      dep_id <- req(input$selected_dep)
+      paste0(dep_id, "_", format(Sys.Date(), "%Y%m%d"), ".zip")
+    },
+    content = function(file) {
+      dep_id <- req(input$selected_dep)
+      dep    <- rv$deployments[[dep_id]]
+
+      # Re-derive outputs from the current corrected state
+      min_bout  <- isolate(input$min_bout)
+      bout_res  <- recompute_bouts(dep$tof, min_bout)
+      bouts     <- bout_res$bouts
+      summaries <- recompute_summaries(
+        tof              = bout_res$tof,
+        bouts            = bouts,
+        meta             = dep$meta,
+        log_clean        = NULL,
+        typical_interval = dep$typical_interval,
+        lat              = dep$lat,
+        lon              = dep$lon
+      )
+      tof_out <- bout_res$tof |>
+        left_join(bouts |> select(state_run, bout_id), by = "state_run") |>
+        select(-state_run)
+
+      # Write to a temporary directory, then zip the contents
+      tmp <- file.path(tempdir(), paste0(dep_id, "_export"))
+      dir.create(tmp, showWarnings = FALSE, recursive = TRUE)
+
+      write_csv(tof_out,                        file.path(tmp, "tof_processed.csv"))
+      write_csv(bouts |> select(-state_run),    file.path(tmp, "bout_summary.csv"))
+      write_csv(summaries$day_summary,           file.path(tmp, "day_summary.csv"))
+      write_csv(summaries$device_summary,        file.path(tmp, "device_summary.csv"))
+      write_csv(dep$dht,                         file.path(tmp, "dht_processed.csv"))
+
+      # Include METADATA.TXT if accessible
+      meta_src <- file.path(dep$folder, "METADATA.TXT")
+      if (file.exists(meta_src))
+        file.copy(meta_src, file.path(tmp, "METADATA.TXT"), overwrite = TRUE)
+
+      # zip::zipr is cross-platform and needs no system zip binary
+      zip::zipr(file, files = list.files(tmp, full.names = TRUE))
+    }
+  )
 
 }
 

@@ -80,12 +80,19 @@ valid_window <- function(sec, interval_sec = 2) {
 #' @param gap_threshold_min  Gap longer than this triggers a warning (default 120 min).
 #' @param ema_warmup_n  TOF rows to flag as EMA warm-up after each reboot (default 20).
 #'
-#' @return Invisibly, the folder path.  Side-effect: writes clean CSVs.
+#' @param out_folder Folder to write clean CSVs into. Defaults to `folder`
+#'   (same location as raw files). Set to a separate directory to keep raw and
+#'   processed data apart. METADATA.TXT is copied to out_folder so the
+#'   processed directory is self-contained for loading.
+#' @return Invisibly, the out_folder path.  Side-effect: writes clean CSVs.
 ingest_deployment <- function(folder,
                                year              = NULL,
                                gap_threshold_min = 120,
-                               ema_warmup_n      = 20L) {
+                               ema_warmup_n      = 20L,
+                               out_folder        = NULL) {
   folder <- normalizePath(folder, mustWork = TRUE)
+  if (is.null(out_folder)) out_folder <- folder
+  if (!dir.exists(out_folder)) dir.create(out_folder, recursive = TRUE)
 
   # --- Metadata & year -------------------------------------------------------
   meta <- parse_metadata(file.path(folder, "METADATA.TXT"))
@@ -178,11 +185,16 @@ ingest_deployment <- function(folder,
     dplyr::ungroup()
 
   # --- Write -----------------------------------------------------------------
-  readr::write_csv(log_clean,  file.path(folder, "log_clean.csv"))
-  readr::write_csv(dht_clean,  file.path(folder, "dht_clean.csv"))
-  readr::write_csv(tof_clean,  file.path(folder, "tof_clean.csv"))
+  readr::write_csv(log_clean, file.path(out_folder, "log_clean.csv"))
+  readr::write_csv(dht_clean, file.path(out_folder, "dht_clean.csv"))
+  readr::write_csv(tof_clean, file.path(out_folder, "tof_clean.csv"))
 
-  invisible(folder)
+  # Copy METADATA.TXT so out_folder is self-contained (needed by load_deployment)
+  if (!identical(folder, out_folder))
+    file.copy(file.path(folder, "METADATA.TXT"),
+              file.path(out_folder, "METADATA.TXT"), overwrite = TRUE)
+
+  invisible(out_folder)
 }
 
 
@@ -680,21 +692,28 @@ load_or_process_deployment <- function(folder,
                                         min_bout_sec           = 60,
                                         lat                    = NULL,
                                         lon                    = NULL,
-                                        classification_method  = "gmm") {
-  folder <- normalizePath(folder, mustWork = TRUE)
+                                        classification_method  = "gmm",
+                                        out_folder             = NULL) {
+  folder     <- normalizePath(folder, mustWork = TRUE)
+  out_folder <- if (is.null(out_folder)) folder else {
+    dir.create(out_folder, showWarnings = FALSE, recursive = TRUE)
+    normalizePath(out_folder, mustWork = TRUE)
+  }
+
   processed <- c("tof_processed.csv", "dht_processed.csv",
                  "bout_summary.csv", "day_summary.csv", "device_summary.csv")
   clean     <- c("tof_clean.csv", "dht_clean.csv", "log_clean.csv")
 
-  if (all(file.exists(file.path(folder, processed)))) {
-    return(load_deployment(folder))
+  if (all(file.exists(file.path(out_folder, processed)))) {
+    return(load_deployment(out_folder))
   }
 
-  if (!all(file.exists(file.path(folder, clean)))) {
-    ingest_deployment(folder, year = year)   # may throw "recording_year_needed"
+  if (!all(file.exists(file.path(out_folder, clean)))) {
+    # may throw "recording_year_needed"
+    ingest_deployment(folder, year = year, out_folder = out_folder)
   }
 
-  process_deployment(folder,
+  process_deployment(out_folder,
                      smooth_sec            = smooth_sec,
                      sensitivity           = sensitivity,
                      min_bout_sec          = min_bout_sec,

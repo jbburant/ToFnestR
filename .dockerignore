@@ -1,4 +1,8 @@
 # Never copy these into the Docker image
+# .Rprofile and renv/ activate renv at runtime, which overrides the
+# system library where Docker installed the packages during the build.
+.Rprofile
+renv/
 data/
 simulation/
 .git/

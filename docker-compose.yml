@@ -1,5 +1,5 @@
 # =============================================================================
-# docker-compose.yml — incubeR
+# docker-compose.yml — tofnestr
 #
 # Quick start:
 #   docker-compose up          # start (builds image on first run)
@@ -7,27 +7,33 @@
 #   docker-compose down        # stop
 #
 # Data:
-#   Place deployment folders inside ./data/ (gitignored).
-#   They will appear under "Data" in the app's folder picker.
-#   Example layout:
-#     data/
-#       DEP_2026_NB01/
-#         TOF.CSV  DHT.CSV  LOG.CSV  METADATA.TXT
-#       DEP_2026_NB02/
-#         ...
+#   raw_data/     — place deployment folders here (read-only, never modified)
+#   processed_data/ — app writes outputs here, mirroring the subfolder names
+#
+#   Example:
+#     raw_data/DEP_2026_NB01/TOF.CSV  DHT.CSV  LOG.CSV  METADATA.TXT
+#     → processed_data/DEP_2026_NB01/tof_processed.csv  bout_summary.csv  ...
+#
+#   Override mount paths:
+#     TOFNESTR_RAW=/path/to/raw TOFNESTR_PROCESSED=/path/to/out docker compose up
 # =============================================================================
 
 services:
-  incubeR:
+  tofnestr:
     build: .
-    image: incuber:latest
-    container_name: incuber
+    image: tofnestr:latest
+    container_name: tofnestr
+    platform: linux/amd64
     ports:
       - "3838:3838"
     volumes:
-      # Mount your local data directory into the container.
-      # Override with: INCUBER_DATA=/path/to/data docker-compose up
-      - ${INCUBER_DATA:-./data}:/data:ro
+      # raw_data:  read-only — device CSVs, never modified by the app
+      # processed_data: read-write — clean and processed outputs
+      # The app preserves the subfolder name from raw_data in processed_data
+      # so DEP_2026_NB01/ in raw maps to DEP_2026_NB01/ in processed.
+      - ${TOFNESTR_RAW:-./raw_data}:/raw_data:ro
+      - ${TOFNESTR_PROCESSED:-./processed_data}:/processed_data
     environment:
-      - INCUBER_DATA_DIR=/data
+      - TOFNESTR_RAW_DIR=/raw_data
+      - TOFNESTR_PROCESSED_DIR=/processed_data
     restart: unless-stopped
