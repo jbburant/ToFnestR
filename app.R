@@ -514,7 +514,7 @@ server <- function(input, output, session) {
 
   current_tof_with_bouts <- reactive({
     br <- current_bouts_result()
-    br$tof |> left_join(br$bouts |> select(state_run, bout_id), by = "state_run") |> select(-state_run)
+    br$tof |> select(-any_of("bout_id")) |> left_join(br$bouts |> select(state_run, bout_id), by = "state_run") |> select(-state_run)
   })
 
   current_day_summary <- reactive({
@@ -941,19 +941,28 @@ server <- function(input, output, session) {
     rows <- selected_rows(); n <- length(rows)
     if (n == 0)
       return(tags$small(class = "text-muted mt-2 d-block", "No readings in selected window."))
-    counts <- current_tof()[rows, ] |>
-      count(state_corrected, .drop = FALSE) |>
-      mutate(label = paste0(str_to_title(as.character(state_corrected)), ": ", n))
+    # Extract states directly as characters — avoids list-column issues from
+    # tibble [<- subsetting, and uses base table() rather than dplyr count().
+    states    <- as.character(current_tof()$state_corrected)[rows]
+    state_tbl <- sort(table(states[!is.na(states)]))
+    state_str <- paste(str_to_title(names(state_tbl)), unname(state_tbl),
+                       sep = ": ", collapse = ", ")
     tags$small(class = "text-muted mt-2 d-block",
-               paste(n, "readings selected —"), paste(counts$label, collapse = ", "),
+               paste(n, "readings selected —"), state_str,
                paste0("(", format(rng[1], "%H:%M"), "–", format(rng[2], "%H:%M"), ")"))
   })
 
+  # Replace values via replace() + re-factor the whole column to avoid the
+  # tibble silently promoting the column to a list when a length-1 factor
+  # is assigned via [<-. Working in character space and re-factoring is safe.
   apply_correction <- function(new_state) {
     rows <- selected_rows(); req(length(rows) > 0, input$selected_dep)
-    dep_id <- input$selected_dep
+    dep_id  <- input$selected_dep
     tof_new <- rv$deployments[[dep_id]]$tof
-    tof_new$state_corrected[rows] <- factor(new_state, levels = c("present","absent","uncertain"))
+    tof_new$state_corrected <- factor(
+      replace(as.character(tof_new$state_corrected), rows, new_state),
+      levels = c("present", "absent", "uncertain")
+    )
     tof_new$correction_source[rows] <- "manual"
     rv$deployments[[dep_id]]$tof <- tof_new
     selected_range(NULL)
@@ -965,9 +974,13 @@ server <- function(input, output, session) {
 
   observeEvent(input$reset_auto, {
     rows <- selected_rows(); req(length(rows) > 0, input$selected_dep)
-    dep_id <- input$selected_dep
+    dep_id  <- input$selected_dep
     tof_new <- rv$deployments[[dep_id]]$tof
-    tof_new$state_corrected[rows] <- tof_new$state_auto[rows]
+    tof_new$state_corrected <- factor(
+      replace(as.character(tof_new$state_corrected), rows,
+              as.character(tof_new$state_auto[rows])),
+      levels = c("present", "absent", "uncertain")
+    )
     tof_new$correction_source[rows] <- "auto"
     rv$deployments[[dep_id]]$tof <- tof_new
     selected_range(NULL)
@@ -1147,6 +1160,8 @@ server <- function(input, output, session) {
                                         lat = dep$lat, lon = dep$lon)
     tof_out <- bout_res$tof |>
       left_join(bouts |> select(state_run, bout_id), by = "state_run") |>
+      rename(bout_id_auto      = bout_id.x,
+             bout_id_corrected = bout_id.y) |>
       select(-state_run)
 
     folder <- dep$folder
@@ -1194,6 +1209,8 @@ server <- function(input, output, session) {
                                           lat = dep$lat, lon = dep$lon)
       tof_out <- bout_res$tof |>
         left_join(bouts |> select(state_run, bout_id), by = "state_run") |>
+        rename(bout_id_auto      = bout_id.x,
+               bout_id_corrected = bout_id.y) |>
         select(-state_run)
 
       tmp <- file.path(tempdir(), paste0(dep_id, "_export"))
