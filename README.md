@@ -6,11 +6,23 @@ An R pipelines and Shiny application for processing and visualising avian incuba
 
 ---
 
-## Option A — Docker (recommended, no R installation required)
+## Installation
 
-Docker packages the entire R environment into a container. You only need Docker Desktop installed — no R, no packages, no configuration.
+First, clone the repository (or download the ZIP from GitHub and unzip it):
 
-### Prerequisites (one-time)
+```bash
+git clone https://github.com/jburant/ToFnestR.git
+cd ToFnestR
+```
+
+Then choose a deployment option:
+
+<details>
+<summary><strong>Option A — Docker (recommended, no R installation required)</strong></summary>
+
+Docker packages the entire R environment into a container. You only need Docker Desktop — no R, no packages, no configuration.
+
+**Prerequisites (one-time)**
 
 1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop) — download and run the installer
 2. **Apple Silicon Macs only (M1/M2/M3):** open Terminal and run:
@@ -19,16 +31,9 @@ Docker packages the entire R environment into a container. You only need Docker 
    ```
 3. Open Docker Desktop from Applications and wait for the whale icon in the menu bar to stop animating (~30 seconds)
 
-### First-time setup
+**First-time setup**
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/jburant/ToFnestR.git
-   cd ToFnestR
-   ```
-   Or download the ZIP from GitHub and unzip it.
-
-2. Create the data folders next to the repo:
+1. Create the data folders inside the repo:
    ```bash
    mkdir raw_data processed_data
    ```
@@ -37,49 +42,44 @@ Docker packages the entire R environment into a container. You only need Docker 
    raw_data/
      DEP_2026_NB01/
        TOF.CSV  DHT.CSV  LOG.CSV  METADATA.TXT
-     DEP_2026_NB02/
-       ...
    processed_data/
      DEP_2026_NB01/        ← created automatically on first save
-       tof_processed.csv
-       bout_summary.csv
-       day_summary.csv
-       device_summary.csv
+       tof_processed.csv  bout_summary.csv  day_summary.csv  ...
    ```
 
-3. Build and launch the app (10–20 minutes the first time while packages download):
+2. Build and launch (10–20 minutes the first time while packages download):
    ```bash
    docker compose up --build
    ```
 
-4. Open **http://localhost:3838** in your browser.
+3. Open **http://localhost:3838** in your browser.
 
-### Every subsequent launch
+**Every subsequent launch**
 
 ```bash
-cd ToFnestR
 docker compose up
 ```
 
 Then open http://localhost:3838. Takes about 10 seconds.
 
-### Stopping the app
+**Stopping the app**
 
 Press `Ctrl+C` in the Terminal window, or:
 ```bash
 docker compose down
 ```
 
-### Updating when new code is available
+**Updating when new code is available**
 
 ```bash
 git pull
 docker compose up --build
 ```
 
----
+</details>
 
-## Option B — Local R
+<details>
+<summary><strong>Option B — Local R</strong></summary>
 
 **Prerequisites:** R ≥ 4.2
 
@@ -95,6 +95,8 @@ shiny::runApp()
 ```
 
 Running locally, the app reads and writes to the same deployment folder (no `raw_data`/`processed_data` split needed).
+
+</details>
 
 ---
 
