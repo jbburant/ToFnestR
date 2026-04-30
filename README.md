@@ -11,7 +11,7 @@ An R pipeline and Shiny application for processing and visualising avian incubat
 First, clone the repository (or download the ZIP from GitHub and unzip it):
 
 ``` bash
-git clone https://github.com/jburant/ToFnestR.git
+git clone https://github.com/jbburant/ToFnestR.git
 cd ToFnestR
 ```
 
