@@ -1,2 +1,2 @@
-# IncubaToF_processor
-A shiny app to derive incubation behaviour from ToF sensor data
+# ToFnestR
+An R pipeline and Shiny app to semi-automatically and interactively derive incubation behaviour from ToF sensor data.
