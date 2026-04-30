@@ -326,7 +326,9 @@ metadata_lines <- c(
   "species=Cyanistes caeruleus",
   "eggs=7",
   "deployment_date=2026-04-15",
+  "deployment_time=04:20:00",
   "retrieval_date=2026-04-20",
+  "retrieval_time=05:40:00",
   "",
   "notes=Simulated 5-day incubation dataset for pipeline and app testing"
 )

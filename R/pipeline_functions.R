@@ -51,6 +51,30 @@ add_year <- function(ts, year) {
   dt
 }
 
+#' Parse deployment_datetime and retrieval_datetime from a metadata list.
+#'
+#' Combines `deployment_date` + `deployment_time` (and their retrieval
+#' equivalents) into POSIXct. Time defaults to 00:00:00 if omitted.
+#' Returns a list with two elements, either POSIXct or NULL.
+parse_deployment_datetimes <- function(meta, recording_year = NULL) {
+  combine_dt <- function(date_key, time_key) {
+    d <- meta[[date_key]] %||% ""
+    t <- meta[[time_key]] %||% "00:00:00"
+    if (nchar(trimws(d)) == 0) return(NULL)
+    # If date lacks a year, prepend recording_year
+    if (!grepl("^[0-9]{4}", trimws(d)) && !is.null(recording_year))
+      d <- paste0(recording_year, "-", trimws(d))
+    parsed <- suppressWarnings(
+      lubridate::ymd_hms(paste(trimws(d), trimws(t)), quiet = TRUE)
+    )
+    if (is.na(parsed)) NULL else parsed
+  }
+  list(
+    deployment_datetime = combine_dt("deployment_date", "deployment_time"),
+    retrieval_datetime  = combine_dt("retrieval_date",  "retrieval_time")
+  )
+}
+
 #' Assign session IDs based on boot-event timestamps.
 assign_session <- function(timestamps, boot_times) {
   findInterval(as.numeric(timestamps), as.numeric(sort(boot_times)))
@@ -629,18 +653,23 @@ process_deployment <- function(folder,
   readr::write_csv(dht_clean,                       file.path(folder, "dht_processed.csv"))
 
   # Return the in-memory representation used by the app
+  dts <- parse_deployment_datetimes(meta, recording_year = NULL)
   list(
-    meta             = meta,
-    tof              = tof_out,
-    dht              = dht_clean,
-    bouts            = bouts_out,
-    day_summary      = summaries$day_summary,
-    device_summary   = summaries$device_summary,
-    typical_interval = typical_interval,
-    lat              = lat,
-    lon              = lon,
-    sun_times        = sun_times,   # NULL when no coordinates provided
-    folder           = folder
+    meta                = meta,
+    tof                 = tof_out,
+    dht                 = dht_clean,
+    bouts               = bouts_out,
+    day_summary         = summaries$day_summary,
+    device_summary      = summaries$device_summary,
+    typical_interval    = typical_interval,
+    lat                 = lat,
+    lon                 = lon,
+    sun_times           = sun_times,
+    folder              = folder,
+    deployment_datetime = dts$deployment_datetime,
+    retrieval_datetime  = dts$retrieval_datetime,
+    trim_start          = dts$deployment_datetime,
+    trim_end            = dts$retrieval_datetime
   )
 }
 
@@ -652,8 +681,10 @@ process_deployment <- function(folder,
 #' Load a previously processed deployment folder into memory.
 load_deployment <- function(folder) {
   folder <- normalizePath(folder, mustWork = TRUE)
+  meta   <- parse_metadata(file.path(folder, "METADATA.TXT"))
+  dts    <- parse_deployment_datetimes(meta)
   list(
-    meta           = parse_metadata(file.path(folder, "METADATA.TXT")),
+    meta           = meta,
     tof            = readr::read_csv(file.path(folder, "tof_processed.csv"),
                                      show_col_types = FALSE) |>
                        dplyr::mutate(
@@ -673,11 +704,15 @@ load_deployment <- function(folder) {
                                      show_col_types = FALSE),
     device_summary = readr::read_csv(file.path(folder, "device_summary.csv"),
                                      show_col_types = FALSE),
-    typical_interval = 2,   # default; re-inferred if reprocessing
-    lat              = NULL,  # filled in by app after coord prompt
-    lon              = NULL,
-    sun_times        = NULL,
-    folder           = folder
+    typical_interval    = 2,
+    lat                 = NULL,
+    lon                 = NULL,
+    sun_times           = NULL,
+    folder              = folder,
+    deployment_datetime = dts$deployment_datetime,
+    retrieval_datetime  = dts$retrieval_datetime,
+    trim_start          = dts$deployment_datetime,  # default trim = deployment window
+    trim_end            = dts$retrieval_datetime
   )
 }
 

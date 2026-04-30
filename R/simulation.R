@@ -204,6 +204,9 @@ generate_demo_deployment <- function(folder, n_days = 5L, seed = 2026L) {
     notes     = "boot"
   )
 
+  # deployment_time and retrieval_time are set 20 minutes inside the
+  # simulation window (start 04:00, end 06:00 on final day) so the app's
+  # auto-trim visibly clips a slice off each end of the time series.
   meta_lines <- c(
     "device_id=DEV_DEMO",
     "deployment_id=DEMO_2026",
@@ -212,7 +215,9 @@ generate_demo_deployment <- function(folder, n_days = 5L, seed = 2026L) {
     "species=Cyanistes caeruleus",
     "eggs=7",
     "deployment_date=2026-04-15",
+    "deployment_time=04:20:00",
     "retrieval_date=2026-04-20",
+    "retrieval_time=05:40:00",
     "latitude=52.09",
     "longitude=5.12",
     "",
