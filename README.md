@@ -4,44 +4,89 @@ An R pipelines and Shiny application for processing and visualising avian incuba
 
 ![screenshot of local app deployment](app_demo.png?raw=true)
 
-## Running the app
+---
 
-### Option A — Docker (recommended for shared use, no R installation required)
+## Option A — Docker (recommended, no R installation required)
 
-**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+Docker packages the entire R environment into a container. You only need Docker Desktop installed — no R, no packages, no configuration.
+
+### Prerequisites (one-time)
+
+1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop) — download and run the installer
+2. **Apple Silicon Macs only (M1/M2/M3):** open Terminal and run:
+   ```bash
+   softwareupdate --install-rosetta
+   ```
+3. Open Docker Desktop from Applications and wait for the whale icon in the menu bar to stop animating (~30 seconds)
+
+### First-time setup
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/jburant/ToFnestR.git
+   cd ToFnestR
+   ```
+   Or download the ZIP from GitHub and unzip it.
+
+2. Create the data folders next to the repo:
+   ```bash
+   mkdir raw_data processed_data
+   ```
+   Place deployment folders inside `raw_data/`. The app reads from there and writes processed outputs to the matching subfolder in `processed_data/`.
+   ```
+   raw_data/
+     DEP_2026_NB01/
+       TOF.CSV  DHT.CSV  LOG.CSV  METADATA.TXT
+     DEP_2026_NB02/
+       ...
+   processed_data/
+     DEP_2026_NB01/        ← created automatically on first save
+       tof_processed.csv
+       bout_summary.csv
+       day_summary.csv
+       device_summary.csv
+   ```
+
+3. Build and launch the app (10–20 minutes the first time while packages download):
+   ```bash
+   docker compose up --build
+   ```
+
+4. Open **http://localhost:3838** in your browser.
+
+### Every subsequent launch
 
 ```bash
-# First time — generate renv.lock in R (see note below), then:
-docker-compose up --build
-
-# Subsequent runs
-docker-compose up
+cd ToFnestR
+docker compose up
 ```
 
-Open **http://localhost:3838** in your browser.
+Then open http://localhost:3838. Takes about 10 seconds.
 
-Place deployment folders inside `./data/` (created next to the repo). They will appear under the **Data** root in the folder picker.
+### Stopping the app
 
-```
-data/
-  DEP_2026_NB01/
-    TOF.CSV  DHT.CSV  LOG.CSV  METADATA.TXT
-  DEP_2026_NB02/
-    ...
-```
-
-To point at a different data directory:
+Press `Ctrl+C` in the Terminal window, or:
 ```bash
-INCUBER_DATA=/path/to/your/data docker-compose up
+docker compose down
 ```
 
-### Option B — Local R
+### Updating when new code is available
 
-**Prerequisites:** R ≥ 4.2, then restore the package environment:
+```bash
+git pull
+docker compose up --build
+```
 
+---
+
+## Option B — Local R
+
+**Prerequisites:** R ≥ 4.2
+
+Restore the package environment from the lockfile:
 ```r
 install.packages("renv")
-renv::restore()   # installs all packages from renv.lock
+renv::restore()
 ```
 
 Launch:
@@ -49,37 +94,49 @@ Launch:
 shiny::runApp()
 ```
 
-## First-time setup (generate renv.lock)
+Running locally, the app reads and writes to the same deployment folder (no `raw_data`/`processed_data` split needed).
 
-`renv.lock` pins exact package versions for reproducibility. Generate it once in your local R session before the first Docker build:
-
-```r
-renv::init()       # sets up renv, installs packages
-renv::snapshot()   # writes renv.lock
-```
-
-Commit `renv.lock` to git. Re-run `renv::snapshot()` whenever you add or update packages.
+---
 
 ## Device file format
 
-Each deployment folder must contain:
+Each deployment folder must contain four files:
 
 | File | Contents |
 |------|----------|
 | `TOF.CSV` | `timestamp, tof_raw, tof_smooth` — 2 s intervals |
 | `DHT.CSV` | `timestamp, temp1, hum1, temp2, hum2` — 30 s intervals |
 | `LOG.CSV` | `timestamp, event, device_id, notes` |
-| `METADATA.TXT` | Key=value pairs: `device_id`, `deployment_date`, `latitude`, `longitude`, etc. |
+| `METADATA.TXT` | Key=value pairs (see below) |
 
-Timestamps are in `MM-DD HH:MM:SS` format (no year — enter on import or add `deployment_date` to metadata).
+Timestamps use `MM-DD HH:MM:SS` format (no year). The recording year is inferred from `deployment_date` in metadata, or entered on import.
+
+### METADATA.TXT fields
+
+```
+device_id=          # matches firmware ID (required)
+deployment_id=      # unique deployment label (required)
+nestbox=            # nest box identifier
+species=            # species name
+eggs=               # clutch size
+deployment_date=    # YYYY-MM-DD — used to infer recording year
+retrieval_date=     # YYYY-MM-DD
+latitude=           # decimal degrees N — enables sunrise/sunset and active-day stats
+longitude=          # decimal degrees E
+notes=
+```
+
+---
 
 ## Demo
 
-Click **Load demo data** in the sidebar to generate and load a synthetic 5-day deployment (April 2026, Netherlands blue tit). No files are required.
+Click **Load demo data** in the sidebar to generate and load a synthetic 5-day deployment (April 2026, Netherlands, blue tit). No files are required. Use **Download this deployment** to export the processed outputs as a ZIP.
+
+---
 
 ## Standalone pipeline scripts
 
-The pre-processing pipeline can also be run outside the app:
+The pipeline can also be run outside the app:
 
 ```r
 source("01_ingest.R")   # raw CSVs → *_clean.csv
@@ -88,6 +145,24 @@ source("02_process.R")  # *_clean.csv → *_processed.csv
 
 Set `DEPLOYMENT_DIR` at the top of each script to your deployment folder.
 
+---
+
+## For developers — maintaining renv
+
+`renv.lock` pins exact package versions. If you add or update packages:
+
+```r
+renv::snapshot()   # update the lockfile
+```
+
+Commit `renv.lock`, then rebuild the Docker image:
+
+```bash
+docker compose up --build
+```
+
+---
+
 ## License
 
-GPL-3. See dependencies in `renv.lock` for their individual licenses.
+GPL-3. See `renv.lock` for the licenses of individual dependencies.
