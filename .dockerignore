@@ -1,0 +1,14 @@
+# Never copy these into the Docker image
+data/
+simulation/
+.git/
+.gitignore
+renv/library/
+renv/local/
+renv/staging/
+*.Rproj
+.Rhistory
+.RData
+.DS_Store
+Thumbs.db
+README.md
