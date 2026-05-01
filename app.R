@@ -418,10 +418,15 @@ server <- function(input, output, session) {
       error = function(e) { showNotification(paste("Error:", conditionMessage(e)), type = "error", duration = 10); NULL }
     )
     if (!is.null(dep)) {
-      dep_id <- dep$meta$deployment_id %||% basename(folder)
+      dep_id  <- dep$meta$deployment_id %||% basename(folder)
+      meta_lat <- suppressWarnings(as.numeric(dep$meta$latitude  %||% ""))
+      meta_lon <- suppressWarnings(as.numeric(dep$meta$longitude %||% ""))
+      if (!is.na(meta_lat) && !is.na(meta_lon))
+        dep <- attach_sun_times(dep, meta_lat, meta_lon)
       rv$deployments[[dep_id]] <- dep
       choices <- names(rv$deployments)
       updateSelectInput(session, "selected_dep", choices = choices, selected = dep_id)
+      if (is.null(dep$sun_times)) show_coords_modal(dep_id)
     }
   })
 
@@ -871,7 +876,10 @@ server <- function(input, output, session) {
     rng <- selected_range()
     if (is.null(rng)) return(integer(0))
     tof <- current_tof()
-    which(!is.na(tof$timestamp) & tof$timestamp >= rng[1] & tof$timestamp <= rng[2])
+    which(
+      !is.na(tof$timestamp)    & tof$timestamp    >= rng$t_min & tof$timestamp    <= rng$t_max &
+      !is.na(tof$tof_smooth_r) & tof$tof_smooth_r >= rng$d_min & tof$tof_smooth_r <= rng$d_max
+    )
   })
 
   output$tof_correction <- renderPlotly({
@@ -884,8 +892,15 @@ server <- function(input, output, session) {
       filter(!flag_tof_invalid, !is.na(tof_smooth_r),
              as_date(timestamp) == as_date(date_sel)) |>
       mutate(
-        in_trim = (is.null(dep$trim_start) | timestamp >= dep$trim_start) &
-                  (is.null(dep$trim_end)   | timestamp <= dep$trim_end),
+        # Build in_trim with explicit NULL guards — using | with a NULL RHS
+        # produces logical(0) in dplyr, not TRUE, collapsing state_label to
+        # an empty vector and causing plotly to serialise {} as [object Object].
+        in_trim = {
+          ok <- rep(TRUE, dplyr::n())
+          if (!is.null(dep$trim_start)) ok <- ok & timestamp >= dep$trim_start
+          if (!is.null(dep$trim_end))   ok <- ok & timestamp <= dep$trim_end
+          ok
+        },
         state_corrected = factor(state_corrected, levels = c("present","absent","uncertain")),
         state_label = if_else(
           in_trim,
@@ -898,14 +913,20 @@ server <- function(input, output, session) {
 
     axis_style <- list(color = pal$text, gridcolor = pal$grid, zerolinecolor = pal$grid)
 
-    # Build color map including "Outside trim"
+    # Colour map: all expected state_label values must be present to avoid
+    # plotly serialising an unmapped label as [object Object].
+    # "Unclassified" covers NA state_corrected rows (invalid / warmup readings).
+    # "Outside trim" covers points beyond the deployment window.
+    # Per-point opacity via formula breaks when color splits into multiple traces,
+    # so use a fixed opacity — the grey colour already distinguishes outside-trim.
     colors_ext <- c(setNames(unname(STATE_COLORS), str_to_title(names(STATE_COLORS))),
+                    "Unclassified" = "#dddddd",
                     "Outside trim" = "#bbbbbb")
 
     plot_ly(data = tof, x = ~timestamp, y = ~tof_smooth_r,
             type = "scatter", mode = "markers",
             color = ~state_label, colors = colors_ext,
-            marker = list(size = 3, opacity = ~if_else(in_trim, 0.75, 0.25)),
+            marker = list(size = 3, opacity = 0.7),
             text = ~paste0(format(timestamp, "%H:%M:%S"), "<br>",
                            round(tof_smooth_r, 1), " mm<br>", state_label),
             hoverinfo = "text", source = "correction_plot") |>
@@ -922,6 +943,7 @@ server <- function(input, output, session) {
   observeEvent(event_data("plotly_selected", source = "correction_plot"), {
     sel <- event_data("plotly_selected", source = "correction_plot")
     if (!is.data.frame(sel) || nrow(sel) == 0) { selected_range(NULL); return() }
+
     x <- sel$x
     if (is.character(x)) {
       t_min <- ymd_hms(min(x), quiet = TRUE); t_max <- ymd_hms(max(x), quiet = TRUE)
@@ -930,26 +952,32 @@ server <- function(input, output, session) {
       t_max <- as.POSIXct(max(as.numeric(x)) / 1000, origin = "1970-01-01", tz = "UTC")
     }
     if (is.na(t_min) || is.na(t_max)) { selected_range(NULL); return() }
-    selected_range(c(t_min, t_max))
+
+    # Capture y (distance) range from the brush — applied to the full dataset
+    # so non-visible downsampled points within the box are also corrected.
+    d_min <- min(as.numeric(sel$y), na.rm = TRUE)
+    d_max <- max(as.numeric(sel$y), na.rm = TRUE)
+
+    selected_range(list(t_min = t_min, t_max = t_max, d_min = d_min, d_max = d_max))
   })
 
   output$selection_info_ui <- renderUI({
     rng <- selected_range()
     if (is.null(rng))
       return(tags$small(class = "text-muted mt-2 d-block",
-                        "Draw a box on the plot to select a time window."))
+                        "Draw a box on the plot to select readings."))
     rows <- selected_rows(); n <- length(rows)
     if (n == 0)
-      return(tags$small(class = "text-muted mt-2 d-block", "No readings in selected window."))
-    # Extract states directly as characters — avoids list-column issues from
-    # tibble [<- subsetting, and uses base table() rather than dplyr count().
+      return(tags$small(class = "text-muted mt-2 d-block",
+                        "No readings in selected box."))
     states    <- as.character(current_tof()$state_corrected)[rows]
     state_tbl <- sort(table(states[!is.na(states)]))
     state_str <- paste(str_to_title(names(state_tbl)), unname(state_tbl),
                        sep = ": ", collapse = ", ")
     tags$small(class = "text-muted mt-2 d-block",
                paste(n, "readings selected —"), state_str,
-               paste0("(", format(rng[1], "%H:%M"), "–", format(rng[2], "%H:%M"), ")"))
+               paste0("(", format(rng$t_min, "%H:%M"), "–", format(rng$t_max, "%H:%M"),
+                      ", ", round(rng$d_min, 0), "–", round(rng$d_max, 0), " mm)"))
   })
 
   # Replace values via replace() + re-factor the whole column to avoid the
