@@ -37,7 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # We only need to install the packages specific to this app.
 # This layer is cached by Docker and only re-runs if this RUN line changes.
 RUN R -e "install.packages( \
-      c('shiny', 'shinyFiles', 'bslib', \
+      c('shiny', 'shinyFiles', 'markdown', 'bslib', \
         'dygraphs', 'xts', 'plotly', 'DT', \
         'zoo', 'changepoint', 'mclust', 'suncalc', 'zip'), \
       repos = 'https://cloud.r-project.org', \

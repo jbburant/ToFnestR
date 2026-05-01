@@ -21,9 +21,13 @@ library(DT)
 library(suncalc)
 library(mclust)
 library(zip)
+library(markdown)
 
 source("R/pipeline_functions.R")
 source("R/simulation.R")
+
+# Serve images/ as static files so guide.md can reference screenshots
+addResourcePath("images", "images/")
 
 
 # =============================================================================
@@ -549,6 +553,11 @@ server <- function(input, output, session) {
   # Main panel
   # ---------------------------------------------------------------------------
 
+  # Track the active tab so re-renders (after corrections) restore it rather
+  # than jumping back to Overview.
+  current_tab_rv <- reactiveVal("Overview")
+  observeEvent(input$main_tabs, { current_tab_rv(input$main_tabs) }, ignoreInit = TRUE)
+
   output$main_ui <- renderUI({
     if (length(rv$deployments) == 0) {
       div(class = "d-flex justify-content-center align-items-center", style = "height: 60vh;",
@@ -558,6 +567,8 @@ server <- function(input, output, session) {
               tags$p("Select a deployment folder using the sidebar.")))
     } else {
       navset_card_tab(
+        id       = "main_tabs",
+        selected = isolate(current_tab_rv()),
 
         # ── OVERVIEW ──────────────────────────────────────────────────────────
         nav_panel("Overview",
@@ -577,10 +588,16 @@ server <- function(input, output, session) {
                 tags$small(class = "text-muted",
                   "Tip: use the", tags$strong("Box Select"),
                   "tool (dashed rectangle) in the plotly toolbar before dragging."),
-                div(class = "ms-auto d-flex align-items-center gap-2",
-                  tags$small(class = "text-muted", "Day:"),
+                div(class = "ms-auto d-flex align-items-center gap-1",
+                  actionButton("prev_day", icon("chevron-left"),
+                               class = "btn-sm btn-outline-secondary", title = "Previous day"),
                   div(style = "width: 130px;",
-                    selectInput("correction_date", label = NULL, choices = NULL, width = "100%")))
+                    # selectize = FALSE avoids the plugin init flicker that
+                    # causes the control to briefly render at double height.
+                    selectInput("correction_date", label = NULL, choices = NULL,
+                                width = "100%", selectize = FALSE)),
+                  actionButton("next_day", icon("chevron-right"),
+                               class = "btn-sm btn-outline-secondary", title = "Next day"))
               )
             ),
             plotlyOutput("tof_correction", height = "350px"),
@@ -630,8 +647,8 @@ server <- function(input, output, session) {
         nav_panel("Bout Summary",
           card(
             card_header(
-              div(class = "d-flex align-items-center",
-                "Incubation bouts",
+              div(class = "d-flex align-items-center gap-3",
+                span("Incubation bouts"),
                 div(class = "ms-auto",
                   radioButtons("bout_view", label = NULL,
                                choices = c("Table" = "table", "Timeline" = "timeline"),
@@ -768,6 +785,17 @@ server <- function(input, output, session) {
               )
             )
           )
+        ),
+
+        # ── GUIDE ─────────────────────────────────────────────────────────────
+        nav_panel(
+          title = tagList(icon("circle-question"), "Guide"),
+          card(
+            card_header("ToFnestR — user guide"),
+            div(class = "p-3", style = "max-width: 860px;",
+              includeMarkdown("guide.md")
+            )
+          )
         )
       )
     }
@@ -844,13 +872,37 @@ server <- function(input, output, session) {
   # TAB 2 — Correct States
   # ---------------------------------------------------------------------------
 
-  # Populate day selector and trim inputs when deployment changes
+  # Track the last deployment ID so we can tell the difference between
+  # "user switched deployment" (reset to day 1) and "tof data changed after
+  # a correction" (keep the current day).
+  last_dep_id_rv <- reactiveVal(NULL)
+
+  # Populate day selector (trim-window dates only) and trim inputs
   observeEvent(current_dep(), {
-    dep   <- current_dep()
-    tof   <- current_tof()
-    dates <- sort(unique(as_date(tof$timestamp[!is.na(tof$timestamp)])))
+    dep    <- current_dep()
+    dep_id <- input$selected_dep
+    tof    <- current_tof()
+
+    all_dates <- sort(unique(as_date(tof$timestamp[!is.na(tof$timestamp)])))
+    dates <- all_dates
+    if (!is.null(dep$trim_start)) dates <- dates[dates >= as_date(dep$trim_start)]
+    if (!is.null(dep$trim_end))   dates <- dates[dates <= as_date(dep$trim_end)]
+    if (length(dates) == 0) dates <- all_dates
+
+    # Only jump to day 1 when the deployment itself changes; preserve the
+    # current selection when re-firing after a correction within the same dep.
+    dep_changed <- !identical(dep_id, last_dep_id_rv())
+    last_dep_id_rv(dep_id)
+
+    cur <- input$correction_date
+    new_sel <- if (dep_changed || is.null(cur) || !cur %in% as.character(dates)) {
+      as.character(dates[1])
+    } else {
+      cur
+    }
+
     updateSelectInput(session, "correction_date",
-                      choices = as.character(dates), selected = as.character(dates[1]))
+                      choices = as.character(dates), selected = new_sel)
     if (!is.null(dep$trim_start))
       updateTextInput(session, "trim_start_input",
                       value = format(dep$trim_start, "%Y-%m-%d %H:%M:%S"))
@@ -868,6 +920,25 @@ server <- function(input, output, session) {
     if (!is.na(ts)) rv$deployments[[dep_id]]$trim_start <- ts
     if (!is.na(te)) rv$deployments[[dep_id]]$trim_end   <- te
     showNotification("Trim boundaries updated.", type = "message", duration = 3)
+  })
+
+  # Previous / next day navigation
+  day_choices <- reactive({
+    as.character(sort(unique(as_date(
+      current_tof()$timestamp[!is.na(current_tof()$timestamp)]
+    ))))
+  })
+
+  observeEvent(input$prev_day, {
+    ch  <- day_choices()
+    idx <- match(input$correction_date, ch)
+    if (!is.na(idx) && idx > 1) updateSelectInput(session, "correction_date", selected = ch[idx - 1])
+  })
+
+  observeEvent(input$next_day, {
+    ch  <- day_choices()
+    idx <- match(input$correction_date, ch)
+    if (!is.na(idx) && idx < length(ch)) updateSelectInput(session, "correction_date", selected = ch[idx + 1])
   })
 
   selected_range <- reactiveVal(NULL)
@@ -1144,21 +1215,26 @@ server <- function(input, output, session) {
   # ---------------------------------------------------------------------------
 
   output$day_table <- renderDT({
-    ds <- current_day_summary() |> mutate(on_nest_h = round(on_nest_sec / 3600, 2))
-    has_sun <- "pct_active_day_on_nest" %in% names(ds)
+    ds      <- current_day_summary()
+    has_sun <- "sunrise" %in% names(ds)
+
+    base_cols    <- c("date", "day_length_h", "first_off_start", "last_off_end",
+                      "prop_on_nest", "prop_off_nest", "prop_uncertain",
+                      "n_on_bouts", "n_off_bouts", "mean_on_bout_min", "mean_off_bout_min")
+    base_names   <- c("Date", "Day length (h)", "First off-bout", "Last off-bout",
+                      "Prop. on-nest", "Prop. off-nest", "Prop. uncertain",
+                      "On-bouts (n)", "Off-bouts (n)", "Mean on-bout (min)", "Mean off-bout (min)")
+
     if (has_sun) {
-      ds |> mutate(sunrise_local = format(sunrise, "%H:%M"), sunset_local = format(sunset, "%H:%M")) |>
-        select(date, sunrise_local, sunset_local, active_day_hr, pct_active_day_on_nest,
-               pct_day_on_nest, on_nest_h, n_off_bouts, mean_off_bout_min) |>
+      ds |>
+        select(date, sunrise, sunset, all_of(base_cols[-1])) |>
         datatable(rownames = FALSE, options = list(pageLength = 31, scrollX = TRUE),
-                  colnames = c("Date","Sunrise","Sunset","Active day (h)","% active day on-nest",
-                               "% 24-h on-nest","On-nest (h)","Off-bouts (n)","Mean off-bout (min)"))
+                  colnames = c("Date", "Sunrise", "Sunset", base_names[-1]))
     } else {
-      ds |> mutate(off_nest_h = round(off_nest_sec/3600,2), uncertain_h = round(uncertain_sec/3600,2)) |>
-        select(date, pct_day_on_nest, on_nest_h, off_nest_h, uncertain_h, n_off_bouts, mean_off_bout_min) |>
+      ds |>
+        select(all_of(base_cols)) |>
         datatable(rownames = FALSE, options = list(pageLength = 31, scrollX = TRUE),
-                  colnames = c("Date","% 24-h on-nest","On-nest (h)","Off-nest (h)",
-                               "Uncertain (h)","Off-bouts (n)","Mean off-bout (min)"))
+                  colnames = base_names)
     }
   })
 

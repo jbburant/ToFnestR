@@ -277,62 +277,303 @@ recompute_bouts <- function(tof, min_bout_sec = 60) {
 }
 
 
+#' # =============================================================================
+#' # SUMMARIES  (reactive in Shiny — recomputed after every correction)
+#' # =============================================================================
+#' 
+#' #' Recompute day_summary and device_summary from corrected TOF + bouts.
+#' #'
+#' #' @param tof              Processed TOF data frame (with state_corrected).
+#' #' @param bouts            Bouts table from recompute_bouts().
+#' #' @param meta             Named metadata list.
+#' #' @param log_clean        Clean log data frame (for reboot count).
+#' #' @param typical_interval Median TOF sampling interval in seconds.
+#' #' @param lat              Decimal-degree latitude  (enables active-day stats via suncalc).
+#' #' @param lon              Decimal-degree longitude.
+#' recompute_summaries <- function(tof, bouts, meta, log_clean,
+#'                                  typical_interval = 2,
+#'                                  lat = NULL, lon = NULL) {
+#'   # Off-bouts by day (for joining)
+#'   off_by_day <- bouts |>
+#'     dplyr::filter(state_corrected == "absent", !flag_short) |>
+#'     dplyr::mutate(date = lubridate::as_date(bout_start)) |>
+#'     dplyr::group_by(date) |>
+#'     dplyr::summarise(
+#'       n_off_bouts       = dplyr::n(),
+#'       mean_off_bout_min = round(mean(bout_duration / 60, na.rm = TRUE), 1),
+#'       .groups = "drop"
+#'     )
+#' 
+#'   day_summary <- tof |>
+#'     dplyr::filter(!is.na(state_corrected)) |>
+#'     dplyr::mutate(date = lubridate::as_date(timestamp)) |>
+#'     dplyr::group_by(date) |>
+#'     dplyr::summarise(
+#'       total_valid_sec = dplyr::n() * typical_interval,
+#'       on_nest_sec     = sum(state_corrected == "present",   na.rm = TRUE) * typical_interval,
+#'       off_nest_sec    = sum(state_corrected == "absent",    na.rm = TRUE) * typical_interval,
+#'       uncertain_sec   = sum(state_corrected == "uncertain", na.rm = TRUE) * typical_interval,
+#'       pct_day_on_nest = round(on_nest_sec / 86400 * 100, 1),
+#'       .groups         = "drop"
+#'     ) |>
+#'     dplyr::left_join(off_by_day, by = "date") |>
+#'     dplyr::mutate(n_off_bouts = tidyr::replace_na(n_off_bouts, 0L))
+#' 
+#'   # Deployment-span statistics
+#'   first_ts <- min(tof$timestamp, na.rm = TRUE)
+#'   last_ts  <- max(tof$timestamp, na.rm = TRUE)
+#'   n_days   <- as.numeric(difftime(last_ts, first_ts, units = "days"))
+#' 
+#'   downtime_min <- tof |>
+#'     dplyr::filter(!is.na(dt_sec), dt_sec > 300) |>
+#'     dplyr::summarise(total = sum(dt_sec / 60, na.rm = TRUE)) |>
+#'     dplyr::pull(total)
+#' 
+#'   n_reboots <- if (!is.null(log_clean)) {
+#'     sum(tolower(log_clean$event) == "start", na.rm = TRUE) - 1L
+#'   } else NA_integer_
+#' 
+#'   device_summary <- tibble::tibble(
+#'     deployment_id        = meta$deployment_id   %||% NA_character_,
+#'     device_id            = meta$device_id       %||% NA_character_,
+#'     nestbox              = meta$nestbox          %||% NA_character_,
+#'     species              = meta$species          %||% NA_character_,
+#'     first_timestamp      = first_ts,
+#'     last_timestamp       = last_ts,
+#'     span_days            = round(n_days, 2),
+#'     n_sessions           = dplyr::n_distinct(tof$session_id, na.rm = TRUE),
+#'     n_reboots            = n_reboots,
+#'     total_downtime_min   = round(downtime_min, 1),
+#'     pct_downtime         = round(downtime_min / (n_days * 1440) * 100, 2),
+#'     n_tof_total          = nrow(tof),
+#'     n_tof_invalid        = sum(tof$flag_tof_invalid, na.rm = TRUE),
+#'     pct_tof_invalid      = round(mean(tof$flag_tof_invalid, na.rm = TRUE) * 100, 2),
+#'     n_tof_warmup         = sum(tof$flag_ema_warmup,  na.rm = TRUE),
+#'     n_dht_bad            = NA_integer_,   # filled by caller if dht available
+#'     pct_dht_bad          = NA_real_
+#'   )
+#' 
+#'   # --- Active-day statistics (sunrise → sunset only) --------------------------
+#'   # Requires coordinates and the suncalc package. Falls back gracefully when
+#'   # either is absent — only the 24-h columns appear in that case.
+#'   sun_times <- NULL
+#'   if (!is.null(lat) && !is.null(lon) &&
+#'       requireNamespace("suncalc", quietly = TRUE)) {
+#'     sun_times <- suncalc::getSunlightTimes(
+#'       date = day_summary$date, lat = lat, lon = lon,
+#'       keep = c("sunrise", "sunset"), tz = "UTC"
+#'     )
+#' 
+#'     # On-nest time restricted to the active day window
+#'     active_on_nest <- tof |>
+#'       dplyr::filter(!is.na(state_corrected), !is.na(timestamp)) |>
+#'       dplyr::mutate(date = lubridate::as_date(timestamp)) |>
+#'       dplyr::left_join(
+#'         sun_times |> dplyr::select(date, sunrise, sunset),
+#'         by = "date"
+#'       ) |>
+#'       dplyr::filter(timestamp >= sunrise, timestamp <= sunset) |>
+#'       dplyr::group_by(date) |>
+#'       dplyr::summarise(
+#'         on_nest_active_sec = sum(state_corrected == "present", na.rm = TRUE) *
+#'                               typical_interval,
+#'         .groups = "drop"
+#'       )
+#' 
+#'     day_summary <- day_summary |>
+#'       dplyr::left_join(
+#'         sun_times |>
+#'           dplyr::mutate(
+#'             active_day_hr = round(
+#'               as.numeric(difftime(sunset, sunrise, units = "hours")), 2)
+#'           ) |>
+#'           dplyr::select(date, sunrise, sunset, active_day_hr),
+#'         by = "date"
+#'       ) |>
+#'       dplyr::left_join(active_on_nest, by = "date") |>
+#'       dplyr::mutate(
+#'         pct_active_day_on_nest = dplyr::if_else(
+#'           !is.na(on_nest_active_sec) & active_day_hr > 0,
+#'           round(on_nest_active_sec / (active_day_hr * 3600) * 100, 1),
+#'           NA_real_
+#'         )
+#'       )
+#'   }
+#' 
+#'   list(day_summary = day_summary, device_summary = device_summary,
+#'        sun_times = sun_times)
+#' }
+
+
 # =============================================================================
 # SUMMARIES  (reactive in Shiny — recomputed after every correction)
 # =============================================================================
 
 #' Recompute day_summary and device_summary from corrected TOF + bouts.
 #'
+#' Daily statistics are derived from bouts (ToF → Bouts → Daily), not from
+#' per-reading counts. When coordinates are provided, bouts are filtered to
+#' those *starting* during the active day (sunrise → sunset) and day length
+#' is used as the denominator for proportions. Without coordinates, the full
+#' 24-hour day is used.
+#'
 #' @param tof              Processed TOF data frame (with state_corrected).
 #' @param bouts            Bouts table from recompute_bouts().
 #' @param meta             Named metadata list.
 #' @param log_clean        Clean log data frame (for reboot count).
 #' @param typical_interval Median TOF sampling interval in seconds.
-#' @param lat              Decimal-degree latitude  (enables active-day stats via suncalc).
+#' @param lat              Decimal-degree latitude  (enables active-day stats).
 #' @param lon              Decimal-degree longitude.
 recompute_summaries <- function(tof, bouts, meta, log_clean,
-                                 typical_interval = 2,
-                                 lat = NULL, lon = NULL) {
-  # Off-bouts by day (for joining)
-  off_by_day <- bouts |>
-    dplyr::filter(state_corrected == "absent", !flag_short) |>
-    dplyr::mutate(date = lubridate::as_date(bout_start)) |>
+                                typical_interval = 2,
+                                lat = NULL, lon = NULL) {
+  
+  # --- Sun times (computed first so bouts can be filtered to active day) -----
+  sun_times <- NULL
+  if (!is.null(lat) && !is.null(lon) &&
+      requireNamespace("suncalc", quietly = TRUE)) {
+    all_dates <- unique(lubridate::as_date(tof$timestamp[!is.na(tof$timestamp)]))
+    sun_times <- suncalc::getSunlightTimes(
+      date = all_dates, lat = lat, lon = lon,
+      keep = c("sunrise", "sunset"), tz = "UTC"
+    )
+  }
+  
+  # --- Bout-based daily statistics -------------------------------------------
+  # Filter to bouts *starting* during the active day when coords are available.
+  # Short bouts are excluded from bout counts and mean durations but their
+  # duration is still included in proportion calculations.
+  bout_stats <- bouts |>
+    dplyr::mutate(date = lubridate::as_date(bout_start))
+  
+  if (!is.null(sun_times)) {
+    bout_stats <- bout_stats |>
+      dplyr::left_join(
+        sun_times |> dplyr::select(date, sunrise, sunset),
+        by = "date"
+      ) |>
+      dplyr::filter(bout_start >= sunrise & bout_start <= sunset) |>
+      dplyr::select(-sunrise, -sunset)
+  }
+  
+  # Helper: summarise one state per day
+  summarise_state <- function(df, state_val) {
+    df |>
+      dplyr::filter(state_corrected == state_val) |>
+      dplyr::group_by(date) |>
+      dplyr::summarise(
+        n_bouts   = as.integer(dplyr::n()),
+        sum_sec   = sum(bout_duration, na.rm = TRUE),
+        .groups   = "drop"
+      )
+  }
+  
+  on_day  <- summarise_state(bout_stats, "present")
+  off_day <- summarise_state(bout_stats, "absent")
+  unc_day <- summarise_state(bout_stats, "uncertain")
+  
+  # First / last off-bout times (useful proxy for daily activity window)
+  off_times <- bout_stats |>
+    dplyr::filter(state_corrected == "absent") |>
     dplyr::group_by(date) |>
     dplyr::summarise(
-      n_off_bouts       = dplyr::n(),
-      mean_off_bout_min = round(mean(bout_duration / 60, na.rm = TRUE), 1),
+      first_off_start = format(min(bout_start), "%H:%M"),
+      last_off_end    = format(max(bout_end),   "%H:%M"),
       .groups = "drop"
     )
-
-  day_summary <- tof |>
+  
+  # All dates present in the trimmed tof
+  all_dates_df <- tof |>
     dplyr::filter(!is.na(state_corrected)) |>
     dplyr::mutate(date = lubridate::as_date(timestamp)) |>
-    dplyr::group_by(date) |>
-    dplyr::summarise(
-      total_valid_sec = dplyr::n() * typical_interval,
-      on_nest_sec     = sum(state_corrected == "present",   na.rm = TRUE) * typical_interval,
-      off_nest_sec    = sum(state_corrected == "absent",    na.rm = TRUE) * typical_interval,
-      uncertain_sec   = sum(state_corrected == "uncertain", na.rm = TRUE) * typical_interval,
-      pct_day_on_nest = round(on_nest_sec / 86400 * 100, 1),
-      .groups         = "drop"
+    dplyr::distinct(date) |>
+    dplyr::arrange(date)
+  
+  # Join per-state stats
+  day_summary <- all_dates_df |>
+    dplyr::left_join(
+      on_day  |> dplyr::rename(n_on_bouts = n_bouts, sum_on_sec  = sum_sec),
+      by = "date"
     ) |>
-    dplyr::left_join(off_by_day, by = "date") |>
-    dplyr::mutate(n_off_bouts = tidyr::replace_na(n_off_bouts, 0L))
-
-  # Deployment-span statistics
+    dplyr::left_join(
+      off_day |> dplyr::rename(n_off_bouts = n_bouts, sum_off_sec = sum_sec),
+      by = "date"
+    ) |>
+    dplyr::left_join(
+      unc_day |> dplyr::rename(sum_unc_sec = sum_sec) |> dplyr::select(-n_bouts),
+      by = "date"
+    ) |>
+    dplyr::left_join(off_times, by = "date") |>
+    dplyr::mutate(
+      n_on_bouts  = tidyr::replace_na(n_on_bouts,  0L),
+      n_off_bouts = tidyr::replace_na(n_off_bouts, 0L),
+      sum_on_sec  = tidyr::replace_na(sum_on_sec,  0),
+      sum_off_sec = tidyr::replace_na(sum_off_sec, 0),
+      sum_unc_sec = tidyr::replace_na(sum_unc_sec, 0)
+    )
+  
+  # Add sun-time columns and compute proportions
+  if (!is.null(sun_times)) {
+    day_summary <- day_summary |>
+      dplyr::left_join(
+        sun_times |>
+          dplyr::mutate(
+            day_length_h = round(
+              as.numeric(difftime(sunset, sunrise, units = "hours")), 2),
+            sunrise = format(sunrise, "%H:%M"),
+            sunset  = format(sunset,  "%H:%M")
+          ) |>
+          dplyr::select(date, sunrise, sunset, day_length_h),
+        by = "date"
+      ) |>
+      dplyr::mutate(
+        day_length_sec    = day_length_h * 3600,
+        prop_on_nest      = round(sum_on_sec  / day_length_sec, 3),
+        prop_off_nest     = round(sum_off_sec / day_length_sec, 3),
+        prop_uncertain    = round(sum_unc_sec / day_length_sec, 3),
+        mean_on_bout_min  = dplyr::if_else(
+          n_on_bouts  > 0, round(sum_on_sec  / 60 / n_on_bouts,  1), NA_real_),
+        mean_off_bout_min = dplyr::if_else(
+          n_off_bouts > 0, round(sum_off_sec / 60 / n_off_bouts, 1), NA_real_)
+      ) |>
+      dplyr::select(date, sunrise, sunset, day_length_h,
+                    first_off_start, last_off_end,
+                    prop_on_nest, prop_off_nest, prop_uncertain,
+                    n_on_bouts, n_off_bouts,
+                    mean_on_bout_min, mean_off_bout_min)
+  } else {
+    day_summary <- day_summary |>
+      dplyr::mutate(
+        day_length_h      = 24,
+        prop_on_nest      = round(sum_on_sec  / 86400, 3),
+        prop_off_nest     = round(sum_off_sec / 86400, 3),
+        prop_uncertain    = round(sum_unc_sec / 86400, 3),
+        mean_on_bout_min  = dplyr::if_else(
+          n_on_bouts  > 0, round(sum_on_sec  / 60 / n_on_bouts,  1), NA_real_),
+        mean_off_bout_min = dplyr::if_else(
+          n_off_bouts > 0, round(sum_off_sec / 60 / n_off_bouts, 1), NA_real_)
+      ) |>
+      dplyr::select(date, day_length_h,
+                    first_off_start, last_off_end,
+                    prop_on_nest, prop_off_nest, prop_uncertain,
+                    n_on_bouts, n_off_bouts,
+                    mean_on_bout_min, mean_off_bout_min)
+  }
+  
+  # --- Device-level summary (per-reading stats, independent of sun times) ----
   first_ts <- min(tof$timestamp, na.rm = TRUE)
   last_ts  <- max(tof$timestamp, na.rm = TRUE)
   n_days   <- as.numeric(difftime(last_ts, first_ts, units = "days"))
-
+  
   downtime_min <- tof |>
     dplyr::filter(!is.na(dt_sec), dt_sec > 300) |>
     dplyr::summarise(total = sum(dt_sec / 60, na.rm = TRUE)) |>
     dplyr::pull(total)
-
+  
   n_reboots <- if (!is.null(log_clean)) {
     sum(tolower(log_clean$event) == "start", na.rm = TRUE) - 1L
   } else NA_integer_
-
+  
   device_summary <- tibble::tibble(
     deployment_id        = meta$deployment_id   %||% NA_character_,
     device_id            = meta$device_id       %||% NA_character_,
@@ -349,57 +590,10 @@ recompute_summaries <- function(tof, bouts, meta, log_clean,
     n_tof_invalid        = sum(tof$flag_tof_invalid, na.rm = TRUE),
     pct_tof_invalid      = round(mean(tof$flag_tof_invalid, na.rm = TRUE) * 100, 2),
     n_tof_warmup         = sum(tof$flag_ema_warmup,  na.rm = TRUE),
-    n_dht_bad            = NA_integer_,   # filled by caller if dht available
+    n_dht_bad            = NA_integer_,
     pct_dht_bad          = NA_real_
   )
-
-  # --- Active-day statistics (sunrise → sunset only) --------------------------
-  # Requires coordinates and the suncalc package. Falls back gracefully when
-  # either is absent — only the 24-h columns appear in that case.
-  sun_times <- NULL
-  if (!is.null(lat) && !is.null(lon) &&
-      requireNamespace("suncalc", quietly = TRUE)) {
-    sun_times <- suncalc::getSunlightTimes(
-      date = day_summary$date, lat = lat, lon = lon,
-      keep = c("sunrise", "sunset"), tz = "UTC"
-    )
-
-    # On-nest time restricted to the active day window
-    active_on_nest <- tof |>
-      dplyr::filter(!is.na(state_corrected), !is.na(timestamp)) |>
-      dplyr::mutate(date = lubridate::as_date(timestamp)) |>
-      dplyr::left_join(
-        sun_times |> dplyr::select(date, sunrise, sunset),
-        by = "date"
-      ) |>
-      dplyr::filter(timestamp >= sunrise, timestamp <= sunset) |>
-      dplyr::group_by(date) |>
-      dplyr::summarise(
-        on_nest_active_sec = sum(state_corrected == "present", na.rm = TRUE) *
-                              typical_interval,
-        .groups = "drop"
-      )
-
-    day_summary <- day_summary |>
-      dplyr::left_join(
-        sun_times |>
-          dplyr::mutate(
-            active_day_hr = round(
-              as.numeric(difftime(sunset, sunrise, units = "hours")), 2)
-          ) |>
-          dplyr::select(date, sunrise, sunset, active_day_hr),
-        by = "date"
-      ) |>
-      dplyr::left_join(active_on_nest, by = "date") |>
-      dplyr::mutate(
-        pct_active_day_on_nest = dplyr::if_else(
-          !is.na(on_nest_active_sec) & active_day_hr > 0,
-          round(on_nest_active_sec / (active_day_hr * 3600) * 100, 1),
-          NA_real_
-        )
-      )
-  }
-
+  
   list(day_summary = day_summary, device_summary = device_summary,
        sun_times = sun_times)
 }
