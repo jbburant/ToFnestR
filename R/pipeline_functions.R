@@ -882,7 +882,7 @@ load_deployment <- function(folder) {
     tof            = readr::read_csv(file.path(folder, "tof_processed.csv"),
                                      show_col_types = FALSE) |>
                        dplyr::mutate(
-                         timestamp       = lubridate::ymd_hms(timestamp),
+                         timestamp       = lubridate::ymd_hms(timestamp, quiet = TRUE),
                          state_auto      = factor(state_auto,
                                                   levels = c("present","absent","uncertain")),
                          state_corrected = factor(state_corrected,
@@ -890,10 +890,11 @@ load_deployment <- function(folder) {
                        ),
     dht            = readr::read_csv(file.path(folder, "dht_processed.csv"),
                                      show_col_types = FALSE) |>
-                       dplyr::mutate(timestamp = lubridate::ymd_hms(timestamp)),
+                       dplyr::mutate(timestamp = lubridate::ymd_hms(timestamp, quiet = TRUE)),
     bouts          = readr::read_csv(file.path(folder, "bout_summary.csv"),
                                      show_col_types = FALSE) |>
-                       dplyr::mutate(across(c(bout_start, bout_end), lubridate::ymd_hms)),
+                       dplyr::mutate(bout_start = lubridate::ymd_hms(bout_start, quiet = TRUE), 
+                                     bout_end = lubridate::ymd_hms(bout_end, quiet = TRUE)), 
     day_summary    = readr::read_csv(file.path(folder, "day_summary.csv"),
                                      show_col_types = FALSE),
     device_summary = readr::read_csv(file.path(folder, "device_summary.csv"),

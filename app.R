@@ -66,6 +66,7 @@ ui <- page_sidebar(
 
   tags$head(tags$style(HTML("
     .nav-tabs .nav-link { color: var(--bs-body-color) !important; opacity: 0.6; }
+    .nav-tabs { --bs-nav-link-padding-x: 0.9rem;}
     .nav-tabs .nav-link.active, .nav-tabs .nav-link:hover {
       color: var(--bs-body-color) !important; opacity: 1; font-weight: 600; }
     .dygraph-axis-label, .dygraph-label {
@@ -231,8 +232,8 @@ server <- function(input, output, session) {
       tags$p("Latitude and longitude enable sunrise/sunset lines and active-day",
              "statistics. You can skip and add them to ", tags$code("METADATA.TXT"), " later."),
       fluidRow(
-        column(6, numericInput("lat_input", "Latitude (°N)", value = 52.0, min = -90,  max =  90, step = 0.01)),
-        column(6, numericInput("lon_input", "Longitude (°E)", value =  5.0, min = -180, max = 180, step = 0.01))
+        column(6, numericInput("lat_input", "Latitude (°N)", value = 52.03, min = -90,  max =  90, step = 0.01)),
+        column(6, numericInput("lon_input", "Longitude (°E)", value =  5.85, min = -180, max = 180, step = 0.01))
       ),
       footer = tagList(modalButton("Skip"),
                        actionButton("coords_confirm", "Apply", class = "btn-primary")),
@@ -560,11 +561,39 @@ server <- function(input, output, session) {
 
   output$main_ui <- renderUI({
     if (length(rv$deployments) == 0) {
-      div(class = "d-flex justify-content-center align-items-center", style = "height: 60vh;",
-          div(class = "text-center text-muted",
-              icon("folder-open", class = "fa-3x mb-3"),
-              tags$h5("No data loaded"),
-              tags$p("Select a deployment folder using the sidebar.")))
+      div(class = "container py-4", style = "max-width: 700px;",
+          div(class = "text-center mb-4",
+              icon("dove", class = "fa-2x mb-2 text-primary"),
+              tags$h4("Welcome to ToFnestR"),
+              tags$p(class = "text-muted",
+                     "Nest-box incubation monitoring — ToF sensor pipeline & Shiny visualiser")
+          ),
+          card(class = "mb-3",
+               card_header("Quick start"),
+               div(class = "p-3",
+                   tags$ol(
+                     tags$li("Place deployment folder(s) in ", tags$code("raw_data/"),
+                             " inside the project directory"),
+                     tags$li("Click ", tags$strong("Select folder"), " in the sidebar"),
+                     tags$li("Enter the recording year and site coordinates when prompted"),
+                     tags$li("Review auto-classifications in the ", tags$strong("Overview"), " tab"),
+                     tags$li("Correct mis-classified readings in ", tags$strong("Correct States")),
+                     tags$li("Export corrected data with ", tags$strong("Download this deployment"))
+                   ),
+                   tags$p(class = "text-muted mt-2 mb-0",
+                          icon("flask"), " New to the app? Try ",
+                          tags$strong("Load demo data"), " in the sidebar first.")
+               )
+          ),
+          div(class = "text-center text-muted small mt-2",
+              icon("book-open"), " Full documentation: ",
+              tags$a("User Guide", href = "https://github.com/jbburant/ToFnestR/blob/main/guide.md",
+                     target = "_blank"),
+              " · ",
+              tags$a(icon("github"), " ToFnestR on GitHub",
+                     href = "https://github.com/jbburant/ToFnestR", target = "_blank")
+          )
+      )
     } else {
       navset_card_tab(
         id       = "main_tabs",
@@ -680,9 +709,9 @@ server <- function(input, output, session) {
 
         # ── GUIDE ─────────────────────────────────────────────────────────────
         nav_panel(
-          title = tagList(icon("circle-question"), "Guide"),
+          title = tagList(icon("bolt"), "Quick Start"),
           card(
-            card_header("ToFnestR — user guide"),
+            card_header("Quick Start"),
             div(class = "p-2", style = "max-width: 860px;",
               tags$h5("What this app does"),
               tags$p("Ingests raw CSV data from the nest-box sensor device, applies automated
@@ -1030,7 +1059,7 @@ server <- function(input, output, session) {
     d_max <- max(as.numeric(sel$y), na.rm = TRUE)
 
     selected_range(list(t_min = t_min, t_max = t_max, d_min = d_min, d_max = d_max))
-  })
+  }, ignoreNULL = TRUE)
 
   output$selection_info_ui <- renderUI({
     rng <- selected_range()
