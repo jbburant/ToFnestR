@@ -43,7 +43,21 @@ infer_year_from_date <- function(date_str) {
 #' Handles year-boundary crossings (Dec → Jan) with a plain for-loop
 #' rather than walk() + <<-, which is clearer about the mutation.
 add_year <- function(ts, year) {
-  dt        <- lubridate::ymd_hms(paste0(year, "-", ts), quiet = TRUE)
+  message("ts sample: ", paste(head(ts), collapse=" | "))
+  message("dt sample: ", paste(head(dt), collapse=" | "))
+  # Try the primary format first: "MM-DD HH:MM:SS" (device default)
+  dt <- lubridate::ymd_hms(paste0(year, "-", ts), quiet = TRUE)
+  
+  # Fallback for Excel-mangled format: "M/D/YY H:MM" or "M/D/YY H:MM:SS"
+  needs_fallback <- is.na(dt)
+  if (any(needs_fallback)) {
+    dt[needs_fallback] <- lubridate::mdy_hm(ts[needs_fallback], quiet = TRUE)
+  }
+  if (any(is.na(dt))) {
+    dt[is.na(dt)] <- lubridate::mdy_hms(ts[is.na(dt)], quiet = TRUE)
+  }
+  
+  # Handle year-boundary crossings (Dec → Jan)
   crossings <- which(diff(lubridate::month(dt)) < -6)
   for (cx in crossings) {
     dt[(cx + 1):length(dt)] <- dt[(cx + 1):length(dt)] + lubridate::years(1)
@@ -150,7 +164,7 @@ ingest_deployment <- function(folder,
     dplyr::pull(timestamp)
 
   # --- DHT -------------------------------------------------------------------
-  dht_clean <- readr::read_csv(
+  dht_raw <- readr::read_csv(
     file.path(folder, "DHT.CSV"),
     col_types = readr::cols(.default = "c"), show_col_types = FALSE
   ) |>
@@ -158,18 +172,36 @@ ingest_deployment <- function(folder,
       across(everything(), trimws),
       timestamp = add_year(timestamp, recording_year),
       temp_in   = suppressWarnings(as.numeric(temp1)),
-      hum_in    = suppressWarnings(as.numeric(hum1)),
-      temp_out  = suppressWarnings(as.numeric(temp2)),
-      hum_out   = suppressWarnings(as.numeric(hum2))
-    ) |>
-    dplyr::select(-temp1, -hum1, -temp2, -hum2) |>
+      hum_in    = suppressWarnings(as.numeric(hum1))
+    )
+  
+  two_sensor <- all(c("temp2", "hum2") %in% names(dht_raw)) &&
+    !all(is.na(suppressWarnings(as.numeric(dht_raw$temp2))))
+  
+  if (two_sensor) {
+    dht_clean <- dht_raw |>
+      dplyr::mutate(
+        temp_out = suppressWarnings(as.numeric(temp2)),
+        hum_out  = suppressWarnings(as.numeric(hum2))
+      )
+  } else {
+    dht_clean <- dht_raw |>
+      dplyr::mutate(
+        temp_out = NA_real_,
+        hum_out  = NA_real_
+      )
+  }
+  
+  dht_clean <- dht_clean |>
+    dplyr::select(-temp1, -hum1, -any_of(c("temp2", "hum2"))) |>
     dplyr::arrange(timestamp) |>
     dplyr::mutate(
       session_id   = assign_session(timestamp, boot_times),
       dt_sec       = c(NA_real_, as.numeric(diff(timestamp), units = "secs")),
-      flag_dht_bad = is.na(temp_in) | is.na(hum_in) | is.na(temp_out) | is.na(hum_out),
-      temp_diff    = round(temp_in - temp_out, 2),
-      hum_diff     = round(hum_in  - hum_out,  2)
+      flag_dht_bad = is.na(temp_in) | is.na(hum_in) |
+        (two_sensor & (is.na(temp_out) | is.na(hum_out))),
+      temp_diff    = if (two_sensor) round(temp_in - temp_out, 2) else NA_real_,
+      hum_diff     = if (two_sensor) round(hum_in  - hum_out,  2) else NA_real_
     )
 
   # Large-gap warning

@@ -251,6 +251,10 @@ server <- function(input, output, session) {
          smooth_tof = if (dark) "#e8e8e8" else "#333333",
          bg   = "rgba(0,0,0,0)")
   }
+  
+  two_sensor_dht <- function(dht) {
+    "temp_out" %in% names(dht) && !all(is.na(dht$temp_out))
+  }
 
   # ---------------------------------------------------------------------------
   # Reactive storage
@@ -506,6 +510,11 @@ server <- function(input, output, session) {
 
   current_dht <- reactive({ req(current_dep()); current_dep()$dht })
 
+  single_sensor <- reactive({
+    dht <- current_dht()
+    !two_sensor_dht(dht)
+  })
+  
   current_dht_trimmed <- reactive({
     dht <- current_dht()
     dep <- current_dep()
@@ -1119,9 +1128,12 @@ server <- function(input, output, session) {
   # ---------------------------------------------------------------------------
 
   make_dht_xts <- function(col_in, col_out) {
-    dht <- current_dht_trimmed() |> filter(!is.na(.data[[col_in]]), !is.na(timestamp)) |> downsample_ts()
+    dht <- current_dht_trimmed() |>
+      filter(!is.na(.data[[col_in]]), !is.na(timestamp)) |>
+      downsample_ts()
     req(nrow(dht) > 0)
-    xts(dht |> select(all_of(c(col_in, col_out))), order.by = dht$timestamp)
+    cols <- if (single_sensor()) col_in else c(col_in, col_out)
+    xts(dht |> select(all_of(cols)), order.by = dht$timestamp)
   }
 
   add_sun_events <- function(dg) {
@@ -1134,25 +1146,38 @@ server <- function(input, output, session) {
   }
 
   output$temp_plot <- renderDygraph({
-    pal <- plot_colors(); dat <- make_dht_xts("temp_in", "temp_out")
-    dygraph(dat) |>
-      dySeries("temp_in",  label = "Inside (°C)",  color = "#c0663a") |>
-      dySeries("temp_out", label = "Outside (°C)", color = "#4e9a6e") |>
-      dyOptions(useDataTimezone = TRUE, drawGrid = TRUE, gridLineColor = pal$grid, axisLineColor = pal$axis) |>
+    message("DHT columns: ", paste(names(current_dht()), collapse = ", "))
+    message("single_sensor: ", single_sensor())
+    message("DHT trimmed rows: ", nrow(current_dht_trimmed()))
+    pal <- plot_colors()
+    dat <- make_dht_xts("temp_in", "temp_out")
+    dg <- dygraph(dat) |>
+      dySeries("temp_in", label = if (single_sensor()) "Temperature (°C)" else "Inside (°C)",
+               color = "#c0663a") |>
+      dyOptions(useDataTimezone = TRUE, drawGrid = TRUE,
+                gridLineColor = pal$grid, axisLineColor = pal$axis) |>
       dyAxis("y", label = "Temperature (°C)", axisLabelColor = pal$text) |>
       dyAxis("x", axisLabelColor = pal$text) |>
       dyRangeSelector(height = 20) |> dyLegend(show = "always") |> add_sun_events()
+    if (!single_sensor())
+      dg <- dg |> dySeries("temp_out", label = "Outside (°C)", color = "#4e9a6e")
+    dg
   })
 
   output$hum_plot <- renderDygraph({
-    pal <- plot_colors(); dat <- make_dht_xts("hum_in", "hum_out")
-    dygraph(dat) |>
-      dySeries("hum_in",  label = "Inside (%)",  color = "#c0663a") |>
-      dySeries("hum_out", label = "Outside (%)", color = "#4e9a6e") |>
-      dyOptions(useDataTimezone = TRUE, drawGrid = TRUE, gridLineColor = pal$grid, axisLineColor = pal$axis) |>
+    pal <- plot_colors()
+    dat <- make_dht_xts("hum_in", "hum_out")
+    dg <- dygraph(dat) |>
+      dySeries("hum_in", label = if (single_sensor()) "Relative humidity (%)" else "Inside (%)",
+               color = "#c0663a") |>
+      dyOptions(useDataTimezone = TRUE, drawGrid = TRUE,
+                gridLineColor = pal$grid, axisLineColor = pal$axis) |>
       dyAxis("y", label = "Relative humidity (%)", axisLabelColor = pal$text) |>
       dyAxis("x", axisLabelColor = pal$text) |>
       dyRangeSelector(height = 20) |> dyLegend(show = "always") |> add_sun_events()
+    if (!single_sensor())
+      dg <- dg |> dySeries("hum_out", label = "Outside (%)", color = "#4e9a6e")
+    dg
   })
 
   # ---------------------------------------------------------------------------
